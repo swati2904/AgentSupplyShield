@@ -61,7 +61,7 @@ class EvidenceSpan(BaseModel):
     artifact_id: str
     start_line: int = Field(ge=1)
     end_line: int = Field(ge=1)
-    text: str
+    preview: str
     span_type: str
     content_hash: str
 

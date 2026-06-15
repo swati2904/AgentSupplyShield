@@ -42,7 +42,7 @@ def test_core_models_accept_example_objects() -> None:
         artifact_id=artifact.artifact_id,
         start_line=1,
         end_line=2,
-        text="Tool reads documentation.",
+        preview="Tool reads documentation.",
         span_type="tool_description",
         content_hash="hash_span",
     )
@@ -85,7 +85,7 @@ def test_evidence_span_requires_positive_line_numbers() -> None:
         artifact_id="art_1",
         start_line=3,
         end_line=5,
-        text="Example evidence.",
+        preview="Example evidence.",
         span_type="example",
         content_hash="hash_span_2",
     )
