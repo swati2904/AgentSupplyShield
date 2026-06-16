@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.artifact_storage import LocalArtifactStore, StoredArtifact
 from app.credential_permission_detector import detect_credential_and_permission_signals
 from app.ingestion import LocalFileArtifact, ingest_local_folder
 from app.markdown_parser import parse_markdown_text
@@ -34,27 +35,49 @@ class LocalScanResult(BaseModel):
     policy_decision: str
     findings: list[ReportFinding]
     evidence_spans: list[EvidenceSpan]
+    artifact_storage_path: str
+    stored_artifacts: list[StoredArtifact]
     report_json_path: str
     report_markdown_path: str
 
 
-def scan_local_folder(root_path: str | Path, *, output_dir: str | Path) -> LocalScanResult:
+def scan_local_folder(
+    root_path: str | Path,
+    *,
+    output_dir: str | Path,
+    artifact_store_dir: str | Path | None = None,
+) -> LocalScanResult:
     ingestion = ingest_local_folder(root_path)
     root = Path(ingestion.root_path)
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
+    artifact_store_path = Path(artifact_store_dir).expanduser().resolve() if artifact_store_dir else output / "artifacts"
 
     run_id = _run_id(ingestion.root_path, ingestion.files)
     source_id = f"source_{sha256(ingestion.root_path.encode('utf-8')).hexdigest()[:16]}"
+    artifact_store = LocalArtifactStore(artifact_store_path)
     artifact_paths: dict[str, str] = {}
     parsed_artifacts: list[ParsedArtifactSummary] = []
+    stored_artifacts: list[StoredArtifact] = []
     detector_findings: list[Any] = []
 
     for file_artifact in ingestion.files:
         artifact_id = _artifact_id(file_artifact)
         artifact_paths[artifact_id] = file_artifact.relative_path
         raw_text = Path(file_artifact.absolute_path).read_text(encoding="utf-8", errors="replace")
-        parsed_artifacts.append(_parse_artifact(file_artifact, artifact_id, raw_text))
+        parsed_summary, parsed_payload = _parse_artifact(file_artifact, artifact_id, raw_text)
+        parsed_artifacts.append(parsed_summary)
+        stored_artifacts.append(
+            artifact_store.persist_artifact(
+                source_id=source_id,
+                artifact_id=artifact_id,
+                file_artifact=file_artifact,
+                raw_text=raw_text,
+                artifact_type=parsed_summary.artifact_type,
+                parser_name=parsed_summary.artifact_type,
+                parsed_payload=parsed_payload,
+            )
+        )
         detector_findings.extend(detect_prompt_injection(raw_text, artifact_id=artifact_id))
         detector_findings.extend(detect_credential_and_permission_signals(raw_text, artifact_id=artifact_id))
 
@@ -84,16 +107,22 @@ def scan_local_folder(root_path: str | Path, *, output_dir: str | Path) -> Local
         policy_decision=risk_assessment.policy_decision,
         findings=report.findings,
         evidence_spans=[finding.evidence_span for finding in detector_findings],
+        artifact_storage_path=str(artifact_store.root_path),
+        stored_artifacts=stored_artifacts,
         report_json_path=str(report_json_path),
         report_markdown_path=str(report_markdown_path),
     )
 
 
-def _parse_artifact(file_artifact: LocalFileArtifact, artifact_id: str, raw_text: str) -> ParsedArtifactSummary:
+def _parse_artifact(
+    file_artifact: LocalFileArtifact,
+    artifact_id: str,
+    raw_text: str,
+) -> tuple[ParsedArtifactSummary, dict[str, Any]]:
     extension = file_artifact.extension
     if extension in {".md", ".markdown"}:
         parsed = parse_markdown_text(raw_text, path=file_artifact.relative_path)
-        return ParsedArtifactSummary(
+        summary = ParsedArtifactSummary(
             artifact_id=artifact_id,
             relative_path=file_artifact.relative_path,
             artifact_type="markdown",
@@ -103,22 +132,25 @@ def _parse_artifact(file_artifact: LocalFileArtifact, artifact_id: str, raw_text
             + len(parsed.links)
             + len(parsed.env_vars),
         )
+        return summary, parsed.model_dump(mode="json")
     if extension in {".json", ".yaml", ".yml"}:
         schema_format = "json" if extension == ".json" else "yaml"
         parsed_schema = parse_tool_schema_text(raw_text, schema_format=schema_format, path=file_artifact.relative_path)
-        return ParsedArtifactSummary(
+        summary = ParsedArtifactSummary(
             artifact_id=artifact_id,
             relative_path=file_artifact.relative_path,
             artifact_type=schema_format,
             parsed_item_count=len(parsed_schema.tools) + len(parsed_schema.urls),
             parse_error=parsed_schema.parse_error,
         )
-    return ParsedArtifactSummary(
+        return summary, parsed_schema.model_dump(mode="json")
+    summary = ParsedArtifactSummary(
         artifact_id=artifact_id,
         relative_path=file_artifact.relative_path,
         artifact_type=extension.lstrip(".") or "text",
         parsed_item_count=0,
     )
+    return summary, {"path": file_artifact.relative_path, "items": []}
 
 
 def _artifact_id(file_artifact: LocalFileArtifact) -> str:
