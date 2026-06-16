@@ -7,9 +7,11 @@ from pydantic import BaseModel, Field
 from app.artifact_storage import LocalArtifactStore, StoredArtifact
 from app.credential_permission_detector import detect_credential_and_permission_signals
 from app.ingestion import LocalFileArtifact, ingest_local_folder
+from app.local_repositories import JsonEvidenceSpanRepository, JsonFindingRepository, JsonScanRunRepository
 from app.markdown_parser import parse_markdown_text
-from app.models import EvidenceSpan
+from app.models import EvidenceSpan, Finding, ScanRun, utc_now
 from app.prompt_injection_detector import detect_prompt_injection
+from app.repositories import EvidenceSpanRepository, FindingRepository, ScanRunRepository
 from app.reporting import ReportFinding, build_evidence_grounded_report, report_to_json, report_to_markdown
 from app.risk_scoring import assess_risk
 from app.schema_parser import parse_tool_schema_text
@@ -35,6 +37,11 @@ class LocalScanResult(BaseModel):
     policy_decision: str
     findings: list[ReportFinding]
     evidence_spans: list[EvidenceSpan]
+    persisted_findings: list[Finding]
+    evidence_span_paths: list[str]
+    finding_paths: list[str]
+    scan_run: ScanRun
+    scan_run_path: str | None = None
     artifact_storage_path: str
     stored_artifacts: list[StoredArtifact]
     report_json_path: str
@@ -46,6 +53,9 @@ def scan_local_folder(
     *,
     output_dir: str | Path,
     artifact_store_dir: str | Path | None = None,
+    scan_run_repository: ScanRunRepository | None = None,
+    evidence_span_repository: EvidenceSpanRepository | None = None,
+    finding_repository: FindingRepository | None = None,
 ) -> LocalScanResult:
     ingestion = ingest_local_folder(root_path)
     root = Path(ingestion.root_path)
@@ -55,7 +65,14 @@ def scan_local_folder(
 
     run_id = _run_id(ingestion.root_path, ingestion.files)
     source_id = f"source_{sha256(ingestion.root_path.encode('utf-8')).hexdigest()[:16]}"
+    started_at = utc_now()
     artifact_store = LocalArtifactStore(artifact_store_path)
+    default_scan_run_repository = JsonScanRunRepository(artifact_store_path / "scan_runs")
+    default_evidence_span_repository = JsonEvidenceSpanRepository(artifact_store_path / "evidence_spans")
+    default_finding_repository = JsonFindingRepository(artifact_store_path / "findings")
+    scan_run_repo = scan_run_repository or default_scan_run_repository
+    evidence_span_repo = evidence_span_repository or default_evidence_span_repository
+    finding_repo = finding_repository or default_finding_repository
     artifact_paths: dict[str, str] = {}
     parsed_artifacts: list[ParsedArtifactSummary] = []
     stored_artifacts: list[StoredArtifact] = []
@@ -94,6 +111,43 @@ def scan_local_folder(
     report_markdown_path = output / f"{run_id}.md"
     report_json_path.write_text(report_to_json(report), encoding="utf-8")
     report_markdown_path.write_text(report_to_markdown(report), encoding="utf-8")
+    persisted_evidence_spans: list[EvidenceSpan] = []
+    persisted_findings: list[Finding] = []
+    evidence_span_paths: list[str] = []
+    finding_paths: list[str] = []
+    for detector_finding in detector_findings:
+        evidence_span = detector_finding.evidence_span
+        persisted_evidence_spans.append(evidence_span_repo.upsert_evidence_span(evidence_span))
+        core_finding = finding_repo.upsert_finding(
+            _to_core_finding(
+                detector_finding,
+                source_id=source_id,
+                policy_decision=risk_assessment.policy_decision,
+            )
+        )
+        finding_repo.index_finding_for_run(run_id, core_finding.finding_id)
+        persisted_findings.append(core_finding)
+        if evidence_span_repository is None:
+            evidence_span_paths.append(str(default_evidence_span_repository.path_for_span(evidence_span.span_id)))
+        if finding_repository is None:
+            finding_paths.append(str(default_finding_repository.path_for_finding(core_finding.finding_id)))
+
+    scan_run = scan_run_repo.upsert_scan_run(
+        ScanRun(
+            run_id=run_id,
+            source_id=source_id,
+            status="completed",
+            started_at=started_at,
+            completed_at=utc_now(),
+            finding_ids=[finding.finding_id for finding in persisted_findings],
+            risk_score=risk_assessment.risk_score,
+        )
+    )
+    scan_run_path = (
+        str(default_scan_run_repository.path_for_run(run_id))
+        if scan_run_repository is None
+        else None
+    )
 
     return LocalScanResult(
         run_id=run_id,
@@ -106,7 +160,12 @@ def scan_local_folder(
         risk_level=risk_assessment.risk_level,
         policy_decision=risk_assessment.policy_decision,
         findings=report.findings,
-        evidence_spans=[finding.evidence_span for finding in detector_findings],
+        evidence_spans=persisted_evidence_spans,
+        persisted_findings=persisted_findings,
+        evidence_span_paths=evidence_span_paths,
+        finding_paths=finding_paths,
+        scan_run=scan_run,
+        scan_run_path=scan_run_path,
         artifact_storage_path=str(artifact_store.root_path),
         stored_artifacts=stored_artifacts,
         report_json_path=str(report_json_path),
@@ -164,3 +223,18 @@ def _run_id(root_path: str, files: list[LocalFileArtifact]) -> str:
         digest.update(file_artifact.relative_path.encode("utf-8"))
         digest.update(file_artifact.content_hash.encode("utf-8"))
     return f"run_{digest.hexdigest()[:16]}"
+
+
+def _to_core_finding(detector_finding: Any, *, source_id: str, policy_decision: str) -> Finding:
+    evidence_span = detector_finding.evidence_span
+    return Finding(
+        finding_id=detector_finding.finding_id,
+        source_id=source_id,
+        finding_type=str(getattr(detector_finding, "category", "unknown")),
+        severity=detector_finding.severity,
+        confidence=float(detector_finding.confidence),
+        evidence_span_ids=[evidence_span.span_id],
+        rationale=detector_finding.rationale,
+        recommendation=detector_finding.recommendation,
+        policy_decision=policy_decision,
+    )
