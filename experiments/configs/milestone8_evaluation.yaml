@@ -1,0 +1,9 @@
+experiment_name: milestone8_synthetic_evaluation
+dataset_path: datasets/synthetic_tool_specs.jsonl
+detector_version: static-detectors/v0.1
+policy_version: default-policy/v0.1
+retrieval_mode: hybrid
+model_name: local-hash-embedding-v1
+sandbox_enabled: true
+random_seed: 20260617
+output_path: experiments/runs/milestone8_synthetic_evaluation
