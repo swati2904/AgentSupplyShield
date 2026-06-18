@@ -1,0 +1,12 @@
+policy_version: default-policy/v0.1
+default_mode: strict_mode
+policy_pack_name: default_policy_pack
+require_evidence: true
+audit_decisions: true
+allowed_actions:
+  - allow
+  - warn
+  - quarantine
+  - block
+  - human_approval
+  - sandbox_only

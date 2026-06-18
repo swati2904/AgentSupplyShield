@@ -1,0 +1,7 @@
+enabled: true
+default_mode: guarded
+mock_secrets_only: true
+allow_network: false
+allow_filesystem_write: false
+record_trace: true
+max_actions_per_run: 20

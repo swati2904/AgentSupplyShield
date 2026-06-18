@@ -1,0 +1,8 @@
+detector_version: static-detectors/v0.1
+enabled_detectors:
+  - prompt_injection
+  - credential_reference
+  - permission_signal
+min_confidence: 0.5
+evidence_preview_chars: 240
+suspicious_formatting_enabled: true

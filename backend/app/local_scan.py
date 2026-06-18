@@ -5,11 +5,13 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.artifact_storage import LocalArtifactStore, StoredArtifact
+from app.config import config_hash, load_project_config
 from app.credential_permission_detector import detect_credential_and_permission_signals
 from app.ingestion import LocalFileArtifact, ingest_local_folder
 from app.local_repositories import JsonEvidenceSpanRepository, JsonFindingRepository, JsonScanRunRepository
 from app.markdown_parser import parse_markdown_text
 from app.models import EvidenceSpan, Finding, ScanRun, utc_now
+from app.observability import TraceContext, new_scan_trace_context
 from app.prompt_injection_detector import detect_prompt_injection
 from app.repositories import EvidenceSpanRepository, FindingRepository, ScanRunRepository
 from app.reporting import ReportFinding, build_evidence_grounded_report, report_to_json, report_to_markdown
@@ -28,6 +30,7 @@ class ParsedArtifactSummary(BaseModel):
 class LocalScanResult(BaseModel):
     run_id: str
     source_id: str
+    trace_context: TraceContext
     root_path: str
     scanned_file_count: int = Field(ge=0)
     skipped_count: int = Field(ge=0)
@@ -65,6 +68,11 @@ def scan_local_folder(
 
     run_id = _run_id(ingestion.root_path, ingestion.files)
     source_id = f"source_{sha256(ingestion.root_path.encode('utf-8')).hexdigest()[:16]}"
+    trace_context = new_scan_trace_context(
+        run_id=run_id,
+        source_id=source_id,
+        config_hash=config_hash(load_project_config()),
+    )
     started_at = utc_now()
     artifact_store = LocalArtifactStore(artifact_store_path)
     default_scan_run_repository = JsonScanRunRepository(artifact_store_path / "scan_runs")
@@ -152,6 +160,7 @@ def scan_local_folder(
     return LocalScanResult(
         run_id=run_id,
         source_id=source_id,
+        trace_context=trace_context,
         root_path=str(root),
         scanned_file_count=len(ingestion.files),
         skipped_count=len(ingestion.skipped),

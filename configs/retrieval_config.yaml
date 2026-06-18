@@ -1,0 +1,8 @@
+retrieval_mode: hybrid
+max_results: 5
+lexical_weight: 0.6
+embedding_weight: 0.4
+snippet_chars: 240
+embedding_provider: deterministic_hash
+embedding_model_name: local-hash-embedding-v1
+embedding_dimensions: 64

@@ -1,0 +1,11 @@
+mode: text_only
+allowed_hosts:
+  - github.com
+  - api.github.com
+  - raw.githubusercontent.com
+default_ref: main
+max_selected_files: 100
+max_file_size_bytes: 1000000
+request_timeout_seconds: 10.0
+follow_redirects: false
+execute_remote_code: false
