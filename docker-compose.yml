@@ -1,0 +1,75 @@
+services:
+  api-server:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: agentsupplyshield-api:local
+    environment:
+      AGENTSUPPLYSHIELD_CONFIG_DIR: /app/configs
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: agentsupplyshield-frontend:local
+    ports:
+      - "4173:4173"
+    depends_on:
+      api-server:
+        condition: service_started
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: agentsupplyshield
+      POSTGRES_USER: agentsupplyshield
+      POSTGRES_PASSWORD: agentsupplyshield_local
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U agentsupplyshield -d agentsupplyshield
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  postgres-data:
+  redis-data:
